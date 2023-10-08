@@ -1,0 +1,81 @@
+version: '3.7'
+
+services:
+  api:
+    build: ./backend
+    command: 'uvicorn api.main:app --host 0.0.0.0 --proxy-headers --root-path /api/v1 --reload'
+    volumes:
+      - ./backend:/usr/src/backend
+    env_file:
+      - ./.env
+      - ./.db.env
+    depends_on:
+      - postgres
+    networks:
+      - main
+    restart: on-failure
+
+  bot:
+    build: ./backend
+    command: 'python -m bot'
+    volumes:
+      - ./backend:/usr/src/backend
+    env_file:
+      - ./.env
+      - ./.db.env
+    depends_on:
+      - postgres
+    networks:
+      - main
+    restart: on-failure
+
+  frontend:
+    # image: node:18.14.2-slim
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+      - "24678:24678"
+    # command: yarn dev --host 0.0.0.0
+    volumes:
+      - ./frontend:/usr/src/frontend
+      - /usr/src/frontend/node_modules
+    working_dir: /usr/src/frontend
+    restart: on-failure
+    networks:
+      - main
+
+  postgres:
+    image: postgres:13.2-alpine
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data/
+    env_file:
+      - ./.db.env
+    environment:
+      - POSTGRES_USER=qabot
+      - POSTGRES_PASSWORD=qabot
+      - POSTGRES_DB=qabot
+    networks:
+      - main
+    restart: on-failure
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - 8000:80
+    volumes:
+      - ./nginx/dev.conf:/etc/nginx/nginx.conf:ro
+      # - ./nginx/ssl/:/etc/nginx/ssl/:ro
+      - ./nginx/html/:/etc/nginx/html/:ro
+    depends_on:
+      - api
+      - bot
+    networks:
+      - main
+
+networks:
+  main:
+
+volumes:
+  postgres_dev_data:

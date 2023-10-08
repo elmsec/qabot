@@ -1,0 +1,63 @@
+version: '3.7'
+
+services:
+  api:
+    build: ./backend
+    command: 'uvicorn api.main:app --host 0.0.0.0 --proxy-headers --root-path /api/v1 --reload'
+    volumes:
+      - ./backend:/usr/src/backend
+    env_file:
+      - ./.env
+      - ./.db.env
+    depends_on:
+      - postgres
+    networks:
+      - main
+    restart: on-failure
+
+  bot:
+    build: ./backend
+    command: 'python -m bot'
+    volumes:
+      - ./backend:/usr/src/backend
+    env_file:
+      - ./.env
+      - ./.db.env
+    depends_on:
+      - postgres
+    networks:
+      - main
+    restart: on-failure
+
+  postgres:
+    image: postgres:13.2-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - ./.db.env
+    networks:
+      - main
+    restart: on-failure
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - 80:80
+      # - 443:443
+    volumes:
+      - ./nginx/prod.conf:/etc/nginx/nginx.conf:ro
+      # - ./nginx/ssl/:/etc/nginx/ssl/:ro
+      - ./nginx/html/:/etc/nginx/html/:ro
+    depends_on:
+      - api
+    networks:
+      - main
+    restart: on-failure
+
+networks:
+  main:
+
+volumes:
+  postgres_data:

@@ -1,0 +1,21 @@
+ARG NODE_VERSION=18.14.2
+
+FROM node:${NODE_VERSION}-slim as base
+
+ENV NODE_ENV=development
+
+WORKDIR /usr/src/frontend
+
+# Build
+FROM base as build
+
+COPY package.json ./
+RUN yarn install
+
+# Run
+FROM base
+
+COPY --from=build /usr/src/frontend/node_modules /usr/src/frontend/node_modules
+COPY --from=build /usr/src/frontend/package.json ./
+
+CMD [ "yarn", "dev", "--host", "0.0.0.0" ]
