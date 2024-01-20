@@ -5340,8 +5340,8 @@ vite-plugin-vue-inspector@^3.7.1:
     shell-quote "^1.8.0"
 
 "vite@^3.0.0 || ^4.0.0", vite@^4.4.9:
-  version "4.4.9"
-  resolved "https://registry.npmjs.org/vite/-/vite-4.4.9.tgz"
+  version "4.5.2"
+  resolved "https://registry.yarnpkg.com/vite/-/vite-4.5.2.tgz#d6ea8610e099851dad8c7371599969e0f8b97e82"
   dependencies:
     esbuild "^0.18.10"
     postcss "^8.4.27"
