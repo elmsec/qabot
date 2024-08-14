@@ -415,7 +415,7 @@ def question_typed(update, context):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    user_data["question"]["text"] = update.message.text
+    user_data["question"]["text"] = html_escape(update.message.text)
     message = _(
         "<b>Your anonymous question:</b>\n"
         "<i>{}</i>\n\n"
