@@ -154,6 +154,11 @@ def start_message(user_id):
             _("🔗 My Link"), callback_data="load:link"),
         InlineKeyboardButton(
             _("⚙️ Settings"), callback_data="load:settings"),
+        InlineKeyboardButton(
+            _("📢 Channel"), url="https://t.me/{}".format(
+                os.getenv("CHANNEL_USERNAME")
+            ),
+        ),
     ]
     reply_markup = InlineKeyboardMarkup(build_menu(keyboard, 2))
     return (message, reply_markup)
