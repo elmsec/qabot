@@ -186,16 +186,16 @@ async def answer_question(
         question_link: str,
         data: schemas.QuestionAnswer,
         current_user: dict = Depends(get_current_user)):
-    sender = User.get_or_none(User.link == current_user['sub'])
+    current_user_obj = User.get_or_none(User.link == current_user['sub'])
     question = Question.get_or_none(Question.link == question_link)
 
-    if sender is None:
+    if current_user_obj is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
 
-    if question.sender != sender:
+    if question.to != current_user_obj:
         raise HTTPException(status_code=403, detail="Forbidden")
 
     question.answer = data.answer
