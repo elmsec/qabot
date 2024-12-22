@@ -5,7 +5,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       apiBaseUrl: '/api/v1',
-      botUsername: 'exampleQAbot'
+      botUsername: process.env.BOT_USERNAME || 'askthatbot'
     }
   },
   postcss: {
