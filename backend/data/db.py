@@ -28,7 +28,7 @@ class User(BaseDatabaseModel):
         User model for the database.
         It contains all users who used the bot
     """
-    telegram_id = peewee.IntegerField(unique=True)
+    telegram_id = peewee.BigIntegerField(unique=True)
     first_name = peewee.CharField(max_length=100)
     last_name = peewee.CharField(max_length=100, null=True)
     username = peewee.CharField(max_length=40, null=True)
