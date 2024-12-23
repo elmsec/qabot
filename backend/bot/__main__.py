@@ -9,6 +9,8 @@ from secrets import token_hex
 from html import escape as html_escape
 from functools import wraps
 from peewee import IntegrityError
+# from datetime import datetime
+from peewee import fn
 
 from telegram import (
     InlineKeyboardMarkup,
@@ -34,7 +36,9 @@ from telegram.utils.helpers import (
     mention_html as mh
 )
 
-from data.db import User, Question, Settings
+from data.db import (
+    User, Question, Settings, Campaign, CampaignMessage, CampaignProgress
+)
 
 # Enable logging
 log_format = (
@@ -63,6 +67,10 @@ LIST_OF_ALLOWED_CHATS = [int(i) for i in ALLOWED_CHATS]
 
 TYPING_QUESTION, CHECKING_QUESTION = range(2)
 TYPING_ANSWER, CHECKING_ANSWER = range(2)
+
+CAMPAIGN_STATES = {
+    'RECORDING': 1,
+}
 
 
 # TRANSLATIONS
@@ -580,6 +588,22 @@ def cancel(update, context):
         user_data["answer"]["last_message"].edit_reply_markup()
         del user_data["answer"]
 
+    if context.user_data.get('campaign_state') == CAMPAIGN_STATES['RECORDING']:
+        campaign_id = context.user_data.get('current_campaign')
+        if campaign_id:
+            # Delete campaign and all related messages
+            CampaignMessage.delete().where(
+                CampaignMessage.campaign_id == campaign_id).execute()
+            Campaign.delete().where(Campaign.id == campaign_id).execute()
+
+        context.user_data.pop('campaign_state', None)
+        context.user_data.pop('current_campaign', None)
+        context.user_data.pop('message_count', None)
+
+        update.message.reply_text(
+            "❌ Campaign cancelled and all messages discarded.")
+        return
+
     update.message.reply_text(_("The operation was cancelled."))
     return ConversationHandler.END
 
@@ -992,6 +1016,318 @@ def inline_query(update, context):
     update.inline_query.answer(results, cache_time=5, is_personal=True)
 
 
+@restricted
+def campaign_start(update, context):
+    """Start recording messages for a new campaign"""
+    logger.info(f"Campaign start: {update.message.text}")
+    print(f"Campaign start: {update.message.text}")
+    context.user_data['campaign_state'] = CAMPAIGN_STATES['RECORDING']
+    campaign = Campaign.create()
+    context.user_data['current_campaign'] = campaign.id
+    context.user_data['message_count'] = 0
+
+    message = (
+        "📢 Campaign recording started!\n\n"
+        "- Send messages you want to include in the campaign\n"
+        "- Use /test to preview the messages\n"
+        "- Use /publish to start sending to users\n"
+        "- Use /cancel to discard the campaign"
+    )
+    update.message.reply_text(message)
+
+
+@restricted
+def campaign_message_handler(update, context):
+    """Handle incoming messages during campaign recording"""
+    if context.user_data.get('campaign_state') != CAMPAIGN_STATES['RECORDING']:
+        return
+
+    campaign_id = context.user_data.get('current_campaign')
+    if not campaign_id:
+        return
+
+    message_count = context.user_data.get('message_count', 0)
+
+    # Save message reference
+    CampaignMessage.create(
+        campaign_id=campaign_id,
+        chat_id=update.effective_chat.id,
+        message_id=update.message.message_id,
+        order=message_count
+    )
+
+    context.user_data['message_count'] = message_count + 1
+
+    message = (
+        "✅ Message recorded!\n\n"
+        "- Send more messages to add to campaign\n"
+        "- /test to preview messages\n"
+        "- /publish to start sending\n"
+        "- /cancel to discard"
+    )
+    update.message.reply_text(message)
+
+
+@restricted
+def campaign_test(update, context):
+    """Test campaign by sending messages to admin"""
+    campaign_id = context.user_data.get('current_campaign')
+    if not campaign_id:
+        update.message.reply_text(
+            "No active campaign. Use /campaign to start one.")
+        return
+
+    messages = (CampaignMessage
+                .select()
+                .where(CampaignMessage.campaign_id == campaign_id)
+                .order_by(CampaignMessage.order))
+
+    if not messages:
+        update.message.reply_text("No messages recorded yet!")
+        return
+
+    update.message.reply_text("🔄 Previewing campaign messages...")
+
+    for msg in messages:
+        try:
+            context.bot.copy_message(
+                chat_id=update.effective_user.id,
+                from_chat_id=msg.chat_id,
+                message_id=msg.message_id
+            )
+        except Exception as e:
+            logger.error(f"Error copying message: {str(e)}")
+            update.message.reply_text(
+                (
+                    f"❌ Error previewing message #{msg.order + 1}. "
+                    "This message may not be copyable."
+                )
+            )
+
+
+def campaign_sender(context):
+    """Job to send campaign messages to users"""
+    job_data = context.job.context
+    campaign_id = job_data['campaign_id']
+    admin_id = job_data['admin_id']
+
+    campaign = Campaign.get_by_id(campaign_id)
+
+    if campaign.status != "running":
+        # Remove the job if campaign is not running
+        context.job.schedule_removal()
+        return
+
+    # Get users who haven't received the campaign yet
+    users = (User
+             .select()
+             .where(
+                (User.bot_permission == True) &
+                ~fn.EXISTS(
+                    CampaignProgress
+                    .select()
+                    .where(
+                        (CampaignProgress.campaign == campaign) &
+                        (CampaignProgress.user == User.id)
+                    )
+                )
+             )
+             .limit(5))  # Process 5 users at a time
+
+    if not users:
+        campaign.status = "completed"
+        campaign.save()
+        context.bot.send_message(
+            admin_id,
+            (
+                f"✅ Campaign completed!\n\n"
+                f"Successful: {campaign.successful_sends}\n"
+                f"Failed: {campaign.failed_sends}"
+            )
+        )
+        return
+
+    messages = list(CampaignMessage
+                    .select()
+                    .where(CampaignMessage.campaign_id == campaign_id)
+                    .order_by(CampaignMessage.order))
+
+    for user in users:
+        success = True
+        try:
+            # Send all campaign messages to user
+            for msg in messages:
+                try:
+                    context.bot.copy_message(
+                        chat_id=user.telegram_id,
+                        from_chat_id=msg.chat_id,
+                        message_id=msg.message_id
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error copying message to user {user.id}: {str(e)}")
+                    success = False
+                    raise e  # Re-raise to handle in outer try-except
+
+            if success:
+                CampaignProgress.create(
+                    campaign=campaign,
+                    user=user,
+                    status="sent"
+                )
+                campaign.successful_sends += 1
+
+        except Unauthorized:
+            user.bot_permission = False
+            user.save()
+            CampaignProgress.create(
+                campaign=campaign,
+                user=user,
+                status="failed"
+            )
+            campaign.failed_sends += 1
+        except Exception:
+            CampaignProgress.create(
+                campaign=campaign,
+                user=user,
+                status="failed"
+            )
+            campaign.failed_sends += 1
+
+        campaign.processed_users += 1
+        campaign.save()
+
+
+@restricted
+def campaign_pause(update, context):
+    """Pause an active campaign"""
+    campaign_id = context.user_data.get('current_campaign')
+    if not campaign_id:
+        update.message.reply_text("No active campaign.")
+        return
+
+    campaign = Campaign.get_by_id(campaign_id)
+    if campaign.status != "running":
+        update.message.reply_text("Campaign is not running.")
+        return
+
+    campaign.status = "paused"
+    campaign.save()
+
+    message = (
+        "⏸ Campaign paused\n\n"
+        f"Progress: {campaign.processed_users}/{campaign.total_users}\n"
+        f"Successful: {campaign.successful_sends}\n"
+        f"Failed: {campaign.failed_sends}\n\n"
+        "Use /resume to continue sending"
+    )
+    update.message.reply_text(message)
+
+
+@restricted
+def campaign_resume(update, context):
+    """Resume a paused campaign"""
+    campaign_id = context.user_data.get('current_campaign')
+    if not campaign_id:
+        update.message.reply_text("No active campaign.")
+        return
+
+    campaign = Campaign.get_by_id(campaign_id)
+    if campaign.status != "paused":
+        update.message.reply_text("Campaign is not paused.")
+        return
+
+    campaign.status = "running"
+    campaign.save()
+
+    # Add the job back to the job queue
+    context.job_queue.run_repeating(
+        campaign_sender,
+        interval=5,
+        first=0,
+        context={
+            'campaign_id': campaign_id,
+            'admin_id': update.effective_user.id
+        }
+    )
+
+    message = "▶️ Campaign resumed"
+    update.message.reply_text(message)
+
+
+@restricted
+def campaign_status(update, context):
+    """Check campaign status"""
+    campaign_id = context.user_data.get('current_campaign')
+    if not campaign_id:
+        update.message.reply_text("No active campaign.")
+        return
+
+    campaign = Campaign.get_by_id(campaign_id)
+
+    message = (
+        f"📊 Campaign Status: {campaign.status}\n\n"
+        f"Progress: {campaign.processed_users}/{campaign.total_users}\n"
+        f"Successful: {campaign.successful_sends}\n"
+        f"Failed: {campaign.failed_sends}"
+    )
+    update.message.reply_text(message)
+
+
+@restricted
+def campaign_publish(update, context):
+    """Start sending campaign messages to users"""
+    campaign_id = context.user_data.get('current_campaign')
+    if not campaign_id:
+        update.message.reply_text(
+            "No active campaign. Use /campaign to start one.")
+        return
+
+    campaign = Campaign.get_by_id(campaign_id)
+
+    # Check if campaign is already completed
+    if campaign.status == "completed":
+        update.message.reply_text(
+            "❌ This campaign has already been completed. "
+            "Start a new campaign with /campaign")
+        return
+
+    messages = list(CampaignMessage
+                    .select()
+                    .where(CampaignMessage.campaign_id == campaign_id)
+                    .order_by(CampaignMessage.order))
+
+    if not messages:
+        update.message.reply_text("No messages recorded yet!")
+        return
+
+    # Update campaign status
+    campaign.status = "running"
+    campaign.total_users = User.select().where(
+        User.bot_permission == True).count()
+    campaign.save()
+
+    # Start the campaign job
+    context.job_queue.run_repeating(
+        campaign_sender,
+        interval=5,
+        first=0,
+        context={
+            'campaign_id': campaign_id,
+            'admin_id': update.effective_user.id
+        }
+    )
+
+    message = (
+        "🚀 Campaign started!\n\n"
+        f"Total target users: {campaign.total_users}\n\n"
+        "- Use /status to check progress\n"
+        "- Use /pause to pause sending\n"
+        "- Use /resume to resume sending"
+    )
+    update.message.reply_text(message)
+
+
 def main():
     """Run bot."""
     # persistence
@@ -1039,7 +1375,7 @@ def main():
     dp.add_handler(MessageHandler(~ Filters.private, unallowed_join))
     dp.add_handler(InlineQueryHandler(inline_query))
     dp.add_handler(CommandHandler("stats", stats))
-    dp.add_handler(CommandHandler("test", test))
+    # dp.add_handler(CommandHandler("test", test))
 
     question_conv_handler = ConversationHandler(
         name="question_conversation",
@@ -1087,6 +1423,23 @@ def main():
 
     # log all errors
     dp.add_error_handler(error)
+
+    # Add campaign command handlers
+    dp.add_handler(CommandHandler("campaign", campaign_start))
+    dp.add_handler(CommandHandler("test", campaign_test))
+    dp.add_handler(CommandHandler("publish", campaign_publish))
+    dp.add_handler(CommandHandler("pause", campaign_pause))
+    dp.add_handler(CommandHandler("resume", campaign_resume))
+    dp.add_handler(CommandHandler("status", campaign_status))
+    dp.add_handler(CommandHandler("cancel", cancel))
+
+    # Add campaign message handler
+    dp.add_handler(MessageHandler(
+        ~Filters.command,
+        campaign_message_handler
+    ))
+
+    # paiuse an cancel methods do not work, and sending multiple images as gallery makes them sent separately
 
     # Start the Bot
     updater.start_polling()

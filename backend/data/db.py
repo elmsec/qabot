@@ -5,7 +5,6 @@ from secrets import token_hex
 
 
 # DB CONNECTION (SQLite)
-# DB = peewee.SqliteDatabase('bot.db', pragmas={'foreign_keys': 1})
 DB = peewee.PostgresqlDatabase(
     os.environ.get("SQL_DATABASE", "qabot"),
     user=os.environ.get("SQL_USER", "qabot"),
@@ -13,6 +12,7 @@ DB = peewee.PostgresqlDatabase(
     host=os.environ.get("SQL_HOST", "localhost"),
     port=os.environ.get("SQL_PORT", "5432")
 )
+# DB = peewee.SqliteDatabase('bot.db', pragmas={'foreign_keys': 1})
 
 
 class BaseDatabaseModel(peewee.Model):
@@ -68,9 +68,47 @@ class Settings(BaseDatabaseModel):
     answer_notification = peewee.SmallIntegerField(default=1)
 
 
+class Campaign(BaseDatabaseModel):
+    """
+    Campaign model for bulk messaging
+    """
+    name = peewee.CharField(
+        max_length=100, default=lambda: f"Campaign_{token_hex(4)}")
+    # draft, running, paused, completed:
+    status = peewee.CharField(max_length=20, default="draft")
+    created = peewee.DateTimeField(default=datetime.now)
+    updated = peewee.DateTimeField(default=datetime.now)
+    total_users = peewee.IntegerField(default=0)
+    processed_users = peewee.IntegerField(default=0)
+    successful_sends = peewee.IntegerField(default=0)
+    failed_sends = peewee.IntegerField(default=0)
+
+
+class CampaignMessage(BaseDatabaseModel):
+    """
+    Messages to be sent in a campaign
+    """
+    campaign = peewee.ForeignKeyField(Campaign, backref='messages')
+    chat_id = peewee.BigIntegerField()  # Source chat ID
+    message_id = peewee.BigIntegerField()  # Source message ID
+    order = peewee.IntegerField()
+
+
+class CampaignProgress(BaseDatabaseModel):
+    """
+    Track which users have received campaign messages
+    """
+    campaign = peewee.ForeignKeyField(Campaign, backref='progress')
+    user = peewee.ForeignKeyField(User, backref='campaign_progress')
+    status = peewee.CharField(max_length=20)  # sent, failed
+    processed_at = peewee.DateTimeField(default=datetime.now)
+
+
 def initialize_db(db):
     db.connect()
-    db.create_tables([User, Question, Settings], safe=True)
+    db.create_tables([
+        User, Question, Settings, Campaign, CampaignMessage, CampaignProgress
+        ], safe=True)
     db.close()
 
 

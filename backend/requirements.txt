@@ -5,3 +5,4 @@ fastapi==0.109.1
 python-jose==3.3.0
 uvicorn==0.23.2
 psycopg2-binary==2.9.9
+urllib3==1.26.20
